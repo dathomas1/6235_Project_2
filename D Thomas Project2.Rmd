@@ -1,0 +1,995 @@
+---
+title: "Project 2"
+author: "Darnell Thomas"
+date: "7/26/2022"
+output: 
+  html_document:
+      toc: TRUE
+      toc_depth: 4
+      toc_float: TRUE
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(tidyverse)
+library(knitr)
+library(ggpubr)
+library(fastDummies)
+
+## The package below can be used to build latex equation from lm function
+# library(equatiomatic)
+
+
+### p.value.string v2
+# by Reid Ginoza
+p.value.string = function(p.value){
+  p.value <- round(p.value, digits=4)
+  if (p.value == 0) {
+    return("p < 0.0001")
+  } else {
+    return(paste0("p = ", format(p.value, scientific = F)))
+  }
+}
+```
+## Introduction
+
+This regression model seeks to determine if the sales price of a single-family home can be predicted from the house's characteristics. My analysis will use over 3 months of sales data from my county's appraisal website. Although it is publicly available, I removed the owner, address, parcel ID, and date of sale from data before importing into R. The two continuous predictors will be the year built and heated area of the house. A categorical predictor will be whether the house has an attached garage. The other categorical predictor will be based on the number of bedrooms with houses split into groups - 1, 2, 3, and 4 or more bedrooms.
+
+## Importing Data
+
+The dataset will be composed of one file that contains the sales price, year built, heated area, number of bedrooms, and if the house has an attached garage.
+
+```{r}
+sales_raw <- read.csv("~/sales.csv") %>%
+  as_tibble
+
+sales_raw
+```
+### Number of Bedrooms Histogram
+
+```{r}
+ggplot(sales_raw, aes(bedrooms)) + 
+  geom_histogram(binwidth = 1, color = "#000000", fill = "#0099F8") +
+  geom_text(aes(label = ..count..), stat = "count", vjust = -0.25) +
+  scale_x_continuous(breaks=seq(0, 7, by = 1)) +
+  xlab("# of Bedrooms") + 
+  theme_classic()
+```
+
+### Number of Bedrooms Frequency
+```{r}
+bedroom_frequency <- sales_raw %>%
+  group_by(bedrooms) %>%
+  summarise(cnt = n()) %>%
+  mutate(pct = round(cnt / sum(cnt) * 100, 1)) %>% 
+  arrange(desc(pct))
+
+bedroom_frequency
+
+top_2 <- slice_max(bedroom_frequency, cnt, n = 2)
+```
+The data show that `r top_2$bedrooms[1]`- and `r top_2$bedrooms[2]`-bedroom houses accounted for a combined `r sum(top_2$pct)`% of houses sold. We can also see 5 houses sold with no bedrooms. 
+
+```{r}
+filter(sales_raw, bedrooms == 0)
+```
+#### No-Bedroom Houses
+
+Upon inspection, 4 of the "no bedroom" houses are composed of 2 houses with buildings on adjacent parcels. The last "house" appears to be a single building on a large parcel. I will exclude the "no bedroom"  houses since the sales price listed for these is actually based on the sales price of the adjacent house.
+
+### Creating Categories for Bedrooms
+
+```{r}
+sales <- sales_raw %>% 
+  # Remove 0 bedroom houses
+  filter(bedrooms != 0) %>%
+  # Group together houses with 4 or more bedrooms
+  mutate(has_br = if_else(bedrooms >= 4, '4_or_more', paste(bedrooms))) %>%
+  # Select outcome and predictor columns
+  select(price,
+         year_built,
+         heated_area,
+         bedrooms,
+         has_br,
+         has_garage) %>% 
+  # Create Dummy Columns for Bedroom Groups and Garage
+  dummy_cols('has_br')
+
+sales
+```
+
+### Scatter Plot of Continuous Predictors
+
+```{r}
+ggplot(sales, aes(x=year_built, y=price)) + 
+  geom_point(size=0.5) + 
+  xlab("Year Built") + 
+  ylab("Sales Price") +
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",",
+                                                       scientific = FALSE)) +
+  theme_minimal()
+```
+
+```{r}
+ggplot(sales, aes(x=heated_area, y=price)) + 
+  geom_point(size=0.5) + 
+  xlab("Heated Area") + 
+  ylab("Sales Price") +
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",",
+                                                       scientific = FALSE)) +
+  theme_minimal()
+```
+
+## Data Summary
+
+### Year Built
+```{r}
+# Histogram of Year Built
+ggplot(sales, aes(year_built)) + 
+  geom_histogram(binwidth = 5) +
+  xlab("Year Built") + 
+  theme_minimal()
+
+# Year Built Summary Stats
+year_summary <- summarize(sales, mean = mean(year_built, na.rm=TRUE), 
+                          max = max(year_built, na.rm=TRUE),  
+                          median = median(year_built, na.rm=TRUE), 
+                          min = min(year_built, na.rm=TRUE))
+```
+
+The average year built for houses sold is around `r round(year_summary$mean, 0)`, and the median is `r round(year_summary$median, 0)`. The most recent home was built in `r round(year_summary$max, 0)`, and the oldest was built in `r round(year_summary$min, 0)`.
+
+### Heated Area
+
+```{r}
+# Histogram of Heated Area
+ggplot(sales, aes(heated_area)) + 
+  geom_histogram(binwidth = 100) +
+  xlab("Heated Area") + 
+  theme_minimal()
+
+# Year Built Summary Stats
+area_summary <- summarize(sales, mean = mean(heated_area, na.rm=TRUE), 
+                          sd = sd(heated_area, na.rm=TRUE),
+                          min = min(heated_area, na.rm=TRUE),
+                          max = max(heated_area, na.rm=TRUE),
+                          median = median(heated_area, na.rm=TRUE), 
+                          IQR = IQR(heated_area, na.rm=TRUE))
+```
+
+The heated area has a mean of `r format(round(area_summary$mean, 0), big.mark=",")` sq-ft with a standard deviation of `r format(round(area_summary$sd, 0), big.mark=",")` sq-ft. The median is `r format(round(area_summary$median, 0), big.mark=",")` sq-ft with an interquartile range of `r format(round(area_summary$IQR, 0), big.mark=",")` sq-ft.
+
+### Attached Garage
+
+```{r}
+# Frequency of houses that have a garage
+garage_frequency <- sales %>%
+  group_by(has_garage) %>%
+  summarise(cnt = n()) %>%
+  mutate(pct = round(cnt / sum(cnt) * 100, 1)) %>% 
+  arrange(desc(pct))
+
+# Pie Chart 
+ggplot(garage_frequency, aes(x = "", y = pct, fill = factor(has_garage))) +
+  geom_col() +
+  geom_text(aes(label = paste(pct,"%")),
+            position = position_stack(vjust = 0.5),
+            show.legend = FALSE) +
+  coord_polar(theta = "y") + 
+  guides(fill = guide_legend(title = "Has Garage (1=Yes)")) +
+  theme_void()
+```
+
+About `r round(garage_frequency$pct[1], 0)`% of the houses that sold had attached garages.
+
+## Constructing Regression Line
+
+### Constructing Model with All Main Effects
+
+I will construct a model with both continuous and both categorical predictors while removing the reference group (houses with 1 bedroom) from the model.
+
+```{r}
+# Constructing the model with dummy columns
+model_dummy <- lm(price ~ year_built + heated_area + has_garage + has_br_2 + has_br_3 + has_br_4_or_more,
+                 data = sales)
+
+summary(model_dummy)
+```
+
+```{r}
+# Constructing the same model without dummy columns (will use this method to avoid typos)
+model_1 <- lm(price ~ year_built + heated_area + has_garage + has_br,
+                 data = sales)
+
+summary(model_1)
+```
+
+### Constructing Model with Three-Way Interactions
+
+Now, I will construct a model with three-way interactions. I will avoid including the four-way interaction since it would be difficult to interpret. It also creates a singularity. See below.
+
+```{r}
+# Example of creating 4-way interaction (will not be used)
+model_4way <- lm(price ~ year_built * heated_area * has_garage * has_br,
+                 data = sales)
+
+summary(model_4way)
+```
+
+```{r}
+# Three-way interaction model
+model_3way <- lm(price ~ (year_built + heated_area + has_garage + has_br)^3,
+                 data = sales)
+
+summary(model_3way)
+```
+
+## Test for Significant Three-Way Interactions
+
+Before continuing, let us check if any of the three-way interactions are worth keeping in the model.
+
+```{r}
+full <- model_3way
+
+# Reduced model with main effects and two-way interactions
+model_2way <- lm(price ~ (year_built + heated_area + has_garage + has_br)^2, 
+              data = sales)
+reduced <- model_2way
+
+summary(reduced)
+```
+```{r}
+test_stat <- anova(reduced, full)
+
+test_stat
+```
+
+### Hypothesis Test
+
+ - $H_0:$ all slopes of Three-Way Interactions $= 0$
+ - $H_1:$ at least one of slopes of Three-Way Interactions $\ne 0$
+
+### Test Statistic
+
+ - $F_0:$ `r round(test_stat$F[2], 4)`
+
+### *p*-value
+
+ - `r p.value.string(test_stat$"Pr(>F)"[2])`
+
+### Reject Region
+
+ - Reject $H_0$ if $p \lt \alpha; \alpha = 0.05$
+ 
+### Conclusion / Interpretation
+
+ - Fail to Reject $H_0$. There is not sufficient evidence to suggest that the three-way interactions are significant. Based on this, I can drop the three-way interaction terms from the model. The new model has the same p-value as the model with three-way interactions, but the adjusted $R^2$ dropped slightly by 0.005. I feel this is a reasonable sacrifice since three-way interactions can be difficult to interpret.
+ 
+```{r}
+summary(model_2way)
+```
+
+## Resulting Regression Line
+```{r}
+c <- coefficients(model_2way)
+c
+
+```
+
+
+\[\begin{split}
+\hat{\text{price}} = `r signif(c["(Intercept)"], 4)` 
+- `r abs(signif(c["year_built"], 4))`*\text{year} \\
++ `r signif(c["heated_area"], 4)`*\text{area} \\
++ `r signif(c["has_garage"], 4)`*\text{garage} \\
+- `r abs(signif(c["has_br2"], 4))`*\text{br}_{2} \\
+- `r abs(signif(c["has_br3"], 4))`*\text{br}_{3} \\
+- `r abs(signif(c["has_br4_or_more"], 4))`*\text{br}_{4} \\
+- `r abs(signif(c["year_built:heated_area"], 4))`*\text{(year:area)} \\
+- `r abs(signif(c["year_built:has_garage"], 4))`*\text{(year:garage)} \\
++ `r signif(c["year_built:has_br2"], 4)`*\text{year:br}_{2} \\
++ `r signif(c["year_built:has_br3"], 4)`*\text{year:br}_{3} \\
++ `r signif(c["year_built:has_br4_or_more"], 4)`*\text{year:br}_{4} \\
++ `r signif(c["heated_area:has_garage"], 4)`*\text{(area:garage)} \\
+- `r abs(signif(c["heated_area:has_br2"], 4))`*\text{area:br}_{2} \\
+- `r abs(signif(c["heated_area:has_br3"], 4))`*\text{area:br}_{3} \\
+- `r abs(signif(c["heated_area:has_br4_or_more"], 4))`*\text{area:br}_{4} \\
++ `r signif(c["has_garage:has_br2"], 4)`*\text{garage:br}_{2} \\
+- `r abs(signif(c["has_garage:has_br3"], 4))`*\text{garage:br}_{3} \\
+- `r abs(signif(c["has_garage:has_br4_or_more"], 4))`*\text{garage:br}_{4}
+\end{split}\]
+
+## Test for All Two-Way Significant Interactions
+
+I will check if any of the two-way interactions are significant to determine if I can further simplify the model.
+
+```{r}
+full <- model_2way
+reduced <- model_1
+
+test_stat <- anova(reduced, full)
+
+test_stat
+```
+
+### Hypothesis Test
+
+ - $H_0:$ all slopes of Two-Way Interactions $= 0$
+ - $H_1:$ at least one of slopes of Two-Way Interactions $\ne 0$
+
+### Test Statistic
+
+ - $F_0:$ `r round(test_stat$F[2], 4)`
+
+### *p*-value
+
+ - `r p.value.string(test_stat$"Pr(>F)"[2])`
+
+### Reject Region
+
+ - Reject $H_0$ if $p \lt \alpha; \alpha = 0.05$
+ 
+### Conclusion / Interpretation
+
+ - Reject $H_0$. There is sufficient evidence to suggest that at least one of the two-way interactions is significant. I will leave all the interactions in the model for now.
+ 
+## Test for Year Built/Heated Area Interaction
+
+Although I cannot remove all interactions, I can remove one interaction (year built and heated area) without affecting the rest of the model. Below is the t-test for the year built and heated area interaction.
+
+```{r}
+s2 <- summary(model_2way)
+s2
+```
+
+### Hypothesis Test
+
+ - $H_0:\beta_{(year:area)} = 0$
+ - $H_1:\beta_{(year:area)} \ne 0$
+
+### Test Statistic
+
+ - $t_0:$ `r round(s2[[4]][8,3], 4)`
+
+### *p*-value
+
+ - `r p.value.string(s2[[4]][8,4])`
+
+### Reject Region
+
+ - Reject $H_0$ if $p \lt \alpha; \alpha = 0.05$
+
+### Conclusion / Interpretation
+
+ - Fail to Reject $H_0$. There is not sufficient evidence to suggest that the interaction between year built and heated area is a significant predictor of sales price. I can remove the interaction of year built and heated area from the model. Removing the interaction does not affect the p-value of the entire model and very slightly improves the Adjusted $R^2$ of the new model.
+
+```{r}
+#Constructing new model
+model_2 <- lm(price ~ (year_built + heated_area + has_garage + has_br)^2 - year_built:heated_area, 
+              data = sales)
+
+summary(model_2)
+```
+
+## Test if Bedroom/Garage Interaction is Significant
+
+I reviewed the summary table for the model that includes all two-way interactions. Two-way interactions that consider if the house has a garage are shown to be significant when looking at the p-values. However, the p-values that include interaction between bedroom and garage are greater than our reject region. Let us see if the bedroom-garage interaction helps in the prediction of house sales price.
+
+```{r}
+full <- model_2
+
+# Model with Bedroom-Garage interactions removed
+reduced <- lm(price ~ (year_built + heated_area + has_garage + has_br)^2 - year_built:heated_area - (has_garage:has_br),
+              data = sales)
+
+summary(reduced)
+```
+```{r}
+test_stat <- anova(reduced, full)
+
+test_stat
+```
+
+### Hypothesis Test
+
+ - $H_0:$ all slopes of Bedroom-Garage Two-Way Interaction $= 0$
+ - $H_1:$ at least one of the slopes $\ne 0$
+
+### Test Statistic
+
+ - $F_0:$ `r round(test_stat$F[2], 4)`
+
+### *p*-value
+
+ - `r p.value.string(test_stat$"Pr(>F)"[2])`
+
+### Reject Region
+
+ - Reject $H_0$ if $p \lt \alpha; \alpha = 0.05$
+ 
+### Conclusion / Interpretation
+
+ - Reject $H_0$. There is sufficient evidence to suggest that the bedroom and garage interaction is significant. This interaction will stay in the model.
+
+## Test for Dropping Continuous Predictors (Year Built and Heated Area)
+
+Now I will check if the continuous predictors are significant. If the continuous predictors are found to be insignificant, then their corresponding interactions will also have to be removed from the model.
+
+```{r}
+full <- model_2
+
+# Model with Year Built, Heated Area, and their corresponding interactions removed
+reduced <- lm(price ~ (has_garage + has_br)^2,
+              data = sales)
+
+summary(reduced)
+```
+
+```{r}
+test_stat <- anova(reduced, full)
+
+test_stat
+```
+
+### Hypothesis Test
+
+ - $H_0:$ all slopes of Year Built/Heated Area Two-Way Interactions $= \beta_{year} = \beta_{area} = 0$
+ - $H_1:$ at least one of the slopes $\ne 0$
+
+### Test Statistic
+
+ - $F_0:$ `r round(test_stat$F[2], 4)`
+
+### *p*-value
+
+ - `r p.value.string(test_stat$"Pr(>F)"[2])`
+
+### Reject Region
+
+ - Reject $H_0$ if $p \lt \alpha; \alpha = 0.05$
+ 
+### Conclusion / Interpretation
+
+ - Reject $H_0$. There is sufficient evidence to suggest the year built and heated area are significant predictors of sales price. I will be keep both in the model for now.
+
+## Reconstructing Regression Line based on Tests
+
+After performing tests above, the regression line for the model is below.
+
+```{r}
+c <- coefficients(model_2)
+c
+```
+
+\[\begin{split}
+\hat{\text{price}} = `r signif(c["(Intercept)"], 4)` 
+- `r abs(signif(c["year_built"], 4))`*\text{year} \\
++ `r signif(c["heated_area"], 4)`*\text{area} \\
++ `r signif(c["has_garage"], 4)`*\text{garage} \\
+- `r abs(signif(c["has_br2"], 4))`*\text{br}_{2} \\
+- `r abs(signif(c["has_br3"], 4))`*\text{br}_{3} \\
+- `r abs(signif(c["has_br4_or_more"], 4))`*\text{br}_{4} \\
+- `r abs(signif(c["year_built:has_garage"], 4))`*\text{(year:garage)} \\
++ `r signif(c["year_built:has_br2"], 4)`*\text{year:br}_{2} \\
++ `r signif(c["year_built:has_br3"], 4)`*\text{year:br}_{3} \\
++ `r signif(c["year_built:has_br4_or_more"], 4)`*\text{year:br}_{4} \\
++ `r signif(c["heated_area:has_garage"], 4)`*\text{(area:garage)} \\
+- `r abs(signif(c["heated_area:has_br2"], 4))`*\text{area:br}_{2} \\
+- `r abs(signif(c["heated_area:has_br3"], 4))`*\text{area:br}_{3} \\
+- `r abs(signif(c["heated_area:has_br4_or_more"], 4))`*\text{area:br}_{4} \\
++ `r signif(c["has_garage:has_br2"], 4)`*\text{garage:br}_{2} \\
+- `r abs(signif(c["has_garage:has_br3"], 4))`*\text{garage:br}_{3} \\
+- `r abs(signif(c["has_garage:has_br4_or_more"], 4))`*\text{garage:br}_{4}
+\end{split}\]
+
+## Test for Significant Predictors
+
+Since the interactions are significant, the remaining predictors are also significant.
+
+```{r}
+summary(model_2)
+```
+
+## Visualizations
+For the first visualization, I will model houses with attached garages but different amount of bedrooms. Price is the outcome and will be on the *Y*-axis. The continuous predictor of Heated Area will be on the *X*-axis. I will use different line for the different amount of bedrooms. I will assume this house is average age and was built in `r round(year_summary$mean, 0)`.
+
+### Graphing Heated Area vs Price (year built: `r round(year_summary$mean, 0)`)
+```{r}
+sales <- sales %>%
+  mutate(ya_g1_b1 = c["(Intercept)"] + c["year_built"]*round(year_summary$mean, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*1 
+         + c["has_br2"]*0
+         + c["has_br3"]*0
+         + c["has_br4_or_more"]*0
+         + c["year_built:has_garage"]*round(year_summary$mean, 0)*1
+         + c["year_built:has_br2"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br3"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br4_or_more"]*round(year_summary$mean, 0)*0
+         + c["heated_area:has_garage"]*heated_area*1
+         + c["heated_area:has_br2"]*heated_area*0
+         + c["heated_area:has_br3"]*heated_area*0
+         + c["heated_area:has_br4_or_more"]*heated_area*0
+         + c["has_garage:has_br2"]*1*0
+         + c["has_garage:has_br3"]*1*0
+         + c["has_garage:has_br4_or_more"]*1*0,
+         
+         ya_g1_b2 = c["(Intercept)"] + c["year_built"]*round(year_summary$mean, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*1 
+         + c["has_br2"]*1
+         + c["has_br3"]*0
+         + c["has_br4_or_more"]*0
+         + c["year_built:has_garage"]*round(year_summary$mean, 0)*1
+         + c["year_built:has_br2"]*round(year_summary$mean, 0)*1
+         + c["year_built:has_br3"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br4_or_more"]*round(year_summary$mean, 0)*0
+         + c["heated_area:has_garage"]*heated_area*1
+         + c["heated_area:has_br2"]*heated_area*1
+         + c["heated_area:has_br3"]*heated_area*0
+         + c["heated_area:has_br4_or_more"]*heated_area*0
+         + c["has_garage:has_br2"]*1*1
+         + c["has_garage:has_br3"]*1*0
+         + c["has_garage:has_br4_or_more"]*1*0,
+         
+         ya_g1_b3 = c["(Intercept)"] + c["year_built"]*round(year_summary$mean, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*1 
+         + c["has_br2"]*0
+         + c["has_br3"]*1
+         + c["has_br4_or_more"]*0
+         + c["year_built:has_garage"]*round(year_summary$mean, 0)*1
+         + c["year_built:has_br2"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br3"]*round(year_summary$mean, 0)*1
+         + c["year_built:has_br4_or_more"]*round(year_summary$mean, 0)*0
+         + c["heated_area:has_garage"]*heated_area*1
+         + c["heated_area:has_br2"]*heated_area*0
+         + c["heated_area:has_br3"]*heated_area*1
+         + c["heated_area:has_br4_or_more"]*heated_area*0
+         + c["has_garage:has_br2"]*1*0
+         + c["has_garage:has_br3"]*1*1
+         + c["has_garage:has_br4_or_more"]*1*0,
+         
+         ya_g1_b4 = c["(Intercept)"] + c["year_built"]*round(year_summary$mean, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*1 
+         + c["has_br2"]*0
+         + c["has_br3"]*0
+         + c["has_br4_or_more"]*1
+         + c["year_built:has_garage"]*round(year_summary$mean, 0)*1
+         + c["year_built:has_br2"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br3"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br4_or_more"]*round(year_summary$mean, 0)*1
+         + c["heated_area:has_garage"]*heated_area*1
+         + c["heated_area:has_br2"]*heated_area*0
+         + c["heated_area:has_br3"]*heated_area*0
+         + c["heated_area:has_br4_or_more"]*heated_area*1
+         + c["has_garage:has_br2"]*1*0
+         + c["has_garage:has_br3"]*1*0
+         + c["has_garage:has_br4_or_more"]*1*1
+         )
+
+sales %>% ggplot(aes(x = heated_area, y = price, color = has_br)) +
+  geom_point(size=0.5) +
+  geom_line(aes(y = ya_g1_b1), color = "red") +
+  geom_line(aes(y = ya_g1_b2), color = "green") +
+  geom_line(aes(y = ya_g1_b3), color = "blue") +
+  geom_line(aes(y = ya_g1_b4), color = "purple") +
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",",
+                                                       scientific = FALSE)) +
+  theme_minimal() +
+  ggtitle("Plot for Heated Area with Attached Garage")
+```
+```{r}
+sales %>% filter(bedrooms == 1) %>% 
+  ggplot(aes(x = heated_area, y = price, color = has_br)) +
+  geom_point(size=0.5) +
+  geom_line(aes(y = ya_g1_b1), color = "red") +
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",",
+                                                       scientific = FALSE)) +
+  theme_minimal() +
+  ggtitle("Plot for 1-Bedroom Houses")
+
+```
+The graph shows a 1-bedroom house that is close to 2000 sq-ft that sold for nearly $500,000. This observation falls in line with the other observations as unlikely as it seems. This could indicate a similar issue to the no-bedroom houses discussed [earlier](#no-bedroom-houses) in this analysis. 
+
+```{r}
+sales <- sales %>%
+  mutate(ya_g0_b1 = c["(Intercept)"] + c["year_built"]*round(year_summary$mean, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*0 
+         + c["has_br2"]*0
+         + c["has_br3"]*0
+         + c["has_br4_or_more"]*0
+         + c["year_built:has_garage"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br2"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br3"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br4_or_more"]*round(year_summary$mean, 0)*0
+         + c["heated_area:has_garage"]*heated_area*0
+         + c["heated_area:has_br2"]*heated_area*0
+         + c["heated_area:has_br3"]*heated_area*0
+         + c["heated_area:has_br4_or_more"]*heated_area*0
+         + c["has_garage:has_br2"]*0*0
+         + c["has_garage:has_br3"]*0*0
+         + c["has_garage:has_br4_or_more"]*0*0,
+         
+         ya_g0_b2 = c["(Intercept)"] + c["year_built"]*round(year_summary$mean, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*0 
+         + c["has_br2"]*1
+         + c["has_br3"]*0
+         + c["has_br4_or_more"]*0
+         + c["year_built:has_garage"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br2"]*round(year_summary$mean, 0)*1
+         + c["year_built:has_br3"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br4_or_more"]*round(year_summary$mean, 0)*0
+         + c["heated_area:has_garage"]*heated_area*0
+         + c["heated_area:has_br2"]*heated_area*1
+         + c["heated_area:has_br3"]*heated_area*0
+         + c["heated_area:has_br4_or_more"]*heated_area*0
+         + c["has_garage:has_br2"]*0*1
+         + c["has_garage:has_br3"]*0*0
+         + c["has_garage:has_br4_or_more"]*0*0,
+         
+         ya_g0_b3 = c["(Intercept)"] + c["year_built"]*round(year_summary$mean, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*0 
+         + c["has_br2"]*0
+         + c["has_br3"]*1
+         + c["has_br4_or_more"]*0
+         + c["year_built:has_garage"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br2"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br3"]*round(year_summary$mean, 0)*1
+         + c["year_built:has_br4_or_more"]*round(year_summary$mean, 0)*0
+         + c["heated_area:has_garage"]*heated_area*0
+         + c["heated_area:has_br2"]*heated_area*0
+         + c["heated_area:has_br3"]*heated_area*1
+         + c["heated_area:has_br4_or_more"]*heated_area*0
+         + c["has_garage:has_br2"]*0*0
+         + c["has_garage:has_br3"]*0*1
+         + c["has_garage:has_br4_or_more"]*0*0,
+         
+         ya_g0_b4 = c["(Intercept)"] + c["year_built"]*round(year_summary$mean, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*0 
+         + c["has_br2"]*0
+         + c["has_br3"]*0
+         + c["has_br4_or_more"]*1
+         + c["year_built:has_garage"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br2"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br3"]*round(year_summary$mean, 0)*0
+         + c["year_built:has_br4_or_more"]*round(year_summary$mean, 0)*1
+         + c["heated_area:has_garage"]*heated_area*0
+         + c["heated_area:has_br2"]*heated_area*0
+         + c["heated_area:has_br3"]*heated_area*0
+         + c["heated_area:has_br4_or_more"]*heated_area*1
+         + c["has_garage:has_br2"]*0*0
+         + c["has_garage:has_br3"]*0*0
+         + c["has_garage:has_br4_or_more"]*0*1
+         )
+
+sales %>% ggplot(aes(x = heated_area, y = price, color = has_br)) +
+  geom_point(size=0.5) +
+  geom_line(aes(y = ya_g1_b1), color = "red") +
+  geom_line(aes(y = ya_g1_b2), color = "green") +
+  geom_line(aes(y = ya_g1_b3), color = "blue") +
+  geom_line(aes(y = ya_g1_b4), color = "purple") +
+  geom_line(aes(y = ya_g0_b1), color = "red", alpha = 0.5) +
+  geom_line(aes(y = ya_g0_b2), color = "green", alpha = 0.5) +
+  geom_line(aes(y = ya_g0_b3), color = "blue", alpha = 0.5) +
+  geom_line(aes(y = ya_g0_b4), color = "purple", alpha = 0.5) +
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",",
+                                                       scientific = FALSE)) +
+  theme_minimal() +
+  ggtitle("Plot for Heated Area (No Attached Garage is lighter color)")
+```
+Let us compare all the predicted values at the median heated area of `r format(round(area_summary$median, 0), big.mark=",")` sq-ft. I will also display predicted value at the smallest area of `r format(round(area_summary$min, 0), big.mark=",")` and the largest of `r format(round(area_summary$max, 0), big.mark=",")`.
+
+```{r}
+sales %>% select(heated_area, 
+                 ya_g1_b1,
+                 ya_g1_b2,
+                 ya_g1_b3,
+                 ya_g1_b4,
+                 ya_g0_b1,
+                 ya_g0_b2,
+                 ya_g0_b3,
+                 ya_g0_b4,
+                 ) %>% 
+  filter(heated_area == round(area_summary$median, 0) | heated_area == round(area_summary$min, 0) | heated_area == round(area_summary$max, 0)) %>% 
+  # There could be multiple actual homes with these areas. We only need one of each
+  # since we only want the predicted values
+  distinct %>% 
+  arrange(heated_area)
+  
+  
+```
+
+### Graphing Heated Area vs Price (year built: `r round(year_summary$max, 0)`)
+
+Let us plot if the house was built last year using the same *X* and *Y* axis.
+
+```{r}
+sales <- sales %>%
+  mutate(yb_g1_b1 = c["(Intercept)"] + c["year_built"]*round(year_summary$max, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*1 
+         + c["has_br2"]*0
+         + c["has_br3"]*0
+         + c["has_br4_or_more"]*0
+         + c["year_built:has_garage"]*round(year_summary$max, 0)*1
+         + c["year_built:has_br2"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br3"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br4_or_more"]*round(year_summary$max, 0)*0
+         + c["heated_area:has_garage"]*heated_area*1
+         + c["heated_area:has_br2"]*heated_area*0
+         + c["heated_area:has_br3"]*heated_area*0
+         + c["heated_area:has_br4_or_more"]*heated_area*0
+         + c["has_garage:has_br2"]*1*0
+         + c["has_garage:has_br3"]*1*0
+         + c["has_garage:has_br4_or_more"]*1*0,
+         
+         yb_g1_b2 = c["(Intercept)"] + c["year_built"]*round(year_summary$max, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*1 
+         + c["has_br2"]*1
+         + c["has_br3"]*0
+         + c["has_br4_or_more"]*0
+         + c["year_built:has_garage"]*round(year_summary$max, 0)*1
+         + c["year_built:has_br2"]*round(year_summary$max, 0)*1
+         + c["year_built:has_br3"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br4_or_more"]*round(year_summary$max, 0)*0
+         + c["heated_area:has_garage"]*heated_area*1
+         + c["heated_area:has_br2"]*heated_area*1
+         + c["heated_area:has_br3"]*heated_area*0
+         + c["heated_area:has_br4_or_more"]*heated_area*0
+         + c["has_garage:has_br2"]*1*1
+         + c["has_garage:has_br3"]*1*0
+         + c["has_garage:has_br4_or_more"]*1*0,
+         
+         yb_g1_b3 = c["(Intercept)"] + c["year_built"]*round(year_summary$max, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*1 
+         + c["has_br2"]*0
+         + c["has_br3"]*1
+         + c["has_br4_or_more"]*0
+         + c["year_built:has_garage"]*round(year_summary$max, 0)*1
+         + c["year_built:has_br2"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br3"]*round(year_summary$max, 0)*1
+         + c["year_built:has_br4_or_more"]*round(year_summary$max, 0)*0
+         + c["heated_area:has_garage"]*heated_area*1
+         + c["heated_area:has_br2"]*heated_area*0
+         + c["heated_area:has_br3"]*heated_area*1
+         + c["heated_area:has_br4_or_more"]*heated_area*0
+         + c["has_garage:has_br2"]*1*0
+         + c["has_garage:has_br3"]*1*1
+         + c["has_garage:has_br4_or_more"]*1*0,
+         
+         yb_g1_b4 = c["(Intercept)"] + c["year_built"]*round(year_summary$max, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*1 
+         + c["has_br2"]*0
+         + c["has_br3"]*0
+         + c["has_br4_or_more"]*1
+         + c["year_built:has_garage"]*round(year_summary$max, 0)*1
+         + c["year_built:has_br2"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br3"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br4_or_more"]*round(year_summary$max, 0)*1
+         + c["heated_area:has_garage"]*heated_area*1
+         + c["heated_area:has_br2"]*heated_area*0
+         + c["heated_area:has_br3"]*heated_area*0
+         + c["heated_area:has_br4_or_more"]*heated_area*1
+         + c["has_garage:has_br2"]*1*0
+         + c["has_garage:has_br3"]*1*0
+         + c["has_garage:has_br4_or_more"]*1*1
+         )
+
+sales %>% ggplot(aes(x = heated_area, y = price, color = has_br)) +
+  geom_point(size=0.5) +
+  geom_line(aes(y = yb_g1_b1), color = "red") +
+  geom_line(aes(y = yb_g1_b2), color = "green") +
+  geom_line(aes(y = yb_g1_b3), color = "blue") +
+  geom_line(aes(y = yb_g1_b4), color = "purple") +
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",",
+                                                       scientific = FALSE)) +
+  theme_minimal() +
+  ggtitle("Plot for Heated Area with Attached Garage")
+```
+
+
+```{r}
+sales <- sales %>%
+  mutate(yb_g0_b1 = c["(Intercept)"] + c["year_built"]*round(year_summary$max, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*0 
+         + c["has_br2"]*0
+         + c["has_br3"]*0
+         + c["has_br4_or_more"]*0
+         + c["year_built:has_garage"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br2"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br3"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br4_or_more"]*round(year_summary$max, 0)*0
+         + c["heated_area:has_garage"]*heated_area*0
+         + c["heated_area:has_br2"]*heated_area*0
+         + c["heated_area:has_br3"]*heated_area*0
+         + c["heated_area:has_br4_or_more"]*heated_area*0
+         + c["has_garage:has_br2"]*0*0
+         + c["has_garage:has_br3"]*0*0
+         + c["has_garage:has_br4_or_more"]*0*0,
+         
+         yb_g0_b2 = c["(Intercept)"] + c["year_built"]*round(year_summary$max, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*0 
+         + c["has_br2"]*1
+         + c["has_br3"]*0
+         + c["has_br4_or_more"]*0
+         + c["year_built:has_garage"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br2"]*round(year_summary$max, 0)*1
+         + c["year_built:has_br3"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br4_or_more"]*round(year_summary$max, 0)*0
+         + c["heated_area:has_garage"]*heated_area*0
+         + c["heated_area:has_br2"]*heated_area*1
+         + c["heated_area:has_br3"]*heated_area*0
+         + c["heated_area:has_br4_or_more"]*heated_area*0
+         + c["has_garage:has_br2"]*0*1
+         + c["has_garage:has_br3"]*0*0
+         + c["has_garage:has_br4_or_more"]*0*0,
+         
+         yb_g0_b3 = c["(Intercept)"] + c["year_built"]*round(year_summary$max, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*0 
+         + c["has_br2"]*0
+         + c["has_br3"]*1
+         + c["has_br4_or_more"]*0
+         + c["year_built:has_garage"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br2"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br3"]*round(year_summary$max, 0)*1
+         + c["year_built:has_br4_or_more"]*round(year_summary$max, 0)*0
+         + c["heated_area:has_garage"]*heated_area*0
+         + c["heated_area:has_br2"]*heated_area*0
+         + c["heated_area:has_br3"]*heated_area*1
+         + c["heated_area:has_br4_or_more"]*heated_area*0
+         + c["has_garage:has_br2"]*0*0
+         + c["has_garage:has_br3"]*0*1
+         + c["has_garage:has_br4_or_more"]*0*0,
+         
+         yb_g0_b4 = c["(Intercept)"] + c["year_built"]*round(year_summary$max, 0)
+         + c["heated_area"]*heated_area + c["has_garage"]*0 
+         + c["has_br2"]*0
+         + c["has_br3"]*0
+         + c["has_br4_or_more"]*1
+         + c["year_built:has_garage"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br2"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br3"]*round(year_summary$max, 0)*0
+         + c["year_built:has_br4_or_more"]*round(year_summary$max, 0)*1
+         + c["heated_area:has_garage"]*heated_area*0
+         + c["heated_area:has_br2"]*heated_area*0
+         + c["heated_area:has_br3"]*heated_area*0
+         + c["heated_area:has_br4_or_more"]*heated_area*1
+         + c["has_garage:has_br2"]*0*0
+         + c["has_garage:has_br3"]*0*0
+         + c["has_garage:has_br4_or_more"]*0*1
+         )
+
+sales %>% ggplot(aes(x = heated_area, y = price, color = has_br)) +
+  geom_point(size=0.5) +
+  geom_line(aes(y = yb_g1_b1), color = "red") +
+  geom_line(aes(y = yb_g1_b2), color = "green") +
+  geom_line(aes(y = yb_g1_b3), color = "blue") +
+  geom_line(aes(y = yb_g1_b4), color = "purple") +
+  geom_line(aes(y = yb_g0_b1), color = "red", alpha = .5) +
+  geom_line(aes(y = yb_g0_b2), color = "green", alpha = .5) +
+  geom_line(aes(y = yb_g0_b3), color = "blue", alpha = .5) +
+  geom_line(aes(y = yb_g0_b4), color = "purple", alpha = .5) +
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",",
+                                                       scientific = FALSE)) +
+  theme_minimal() +
+  ggtitle("Plot for Heated Area (No Attached Garage is lighter color)")
+```
+Again, let us compare the predicted values at the median, minimum, and maximum heated area of `r format(round(area_summary$median, 0), big.mark=",")`, `r format(round(area_summary$min, 0), big.mark=",")`, and `r format(round(area_summary$max, 0), big.mark=",")` sq-ft respectively. 
+
+```{r}
+sales %>% select(heated_area, 
+                 yb_g1_b1,
+                 yb_g1_b2,
+                 yb_g1_b3,
+                 yb_g1_b4,
+                 yb_g0_b1,
+                 yb_g0_b2,
+                 yb_g0_b3,
+                 yb_g0_b4,
+                 ) %>% 
+  filter(heated_area == round(area_summary$median, 0) | heated_area == round(area_summary$min, 0) | heated_area == round(area_summary$max, 0)) %>% 
+  # There could be multiple actual homes with these areas. We only need one of each
+  # since we only want the predicted values
+  distinct %>% 
+  arrange(heated_area)
+  
+  
+```
+### Graphing Year Built vs Price
+Now, I will graph the year built on the *X*-axis. I set heated area constant at `r round(area_summary$median, 0)` and assume the house does not have a garage.
+
+```{r}
+sales <- sales %>%
+  mutate(yc_g0_b1 = c["(Intercept)"] + c["year_built"]*year_built
+         + c["heated_area"]*round(area_summary$median, 0) + c["has_garage"]*0 
+         + c["has_br2"]*0
+         + c["has_br3"]*0
+         + c["has_br4_or_more"]*0
+         + c["year_built:has_garage"]*year_built*0
+         + c["year_built:has_br2"]*year_built*0
+         + c["year_built:has_br3"]*year_built*0
+         + c["year_built:has_br4_or_more"]*year_built*0
+         + c["heated_area:has_garage"]*round(area_summary$median, 0)*0
+         + c["heated_area:has_br2"]*round(area_summary$median, 0)*0
+         + c["heated_area:has_br3"]*round(area_summary$median, 0)*0
+         + c["heated_area:has_br4_or_more"]*round(area_summary$median, 0)*0
+         + c["has_garage:has_br2"]*0*0
+         + c["has_garage:has_br3"]*0*0
+         + c["has_garage:has_br4_or_more"]*0*0,
+         
+         yc_g0_b2 = c["(Intercept)"] + c["year_built"]*year_built
+         + c["heated_area"]*round(area_summary$median, 0) + c["has_garage"]*0 
+         + c["has_br2"]*1
+         + c["has_br3"]*0
+         + c["has_br4_or_more"]*0
+         + c["year_built:has_garage"]*year_built*0
+         + c["year_built:has_br2"]*year_built*1
+         + c["year_built:has_br3"]*year_built*0
+         + c["year_built:has_br4_or_more"]*year_built*0
+         + c["heated_area:has_garage"]*round(area_summary$median, 0)*0
+         + c["heated_area:has_br2"]*round(area_summary$median, 0)*1
+         + c["heated_area:has_br3"]*round(area_summary$median, 0)*0
+         + c["heated_area:has_br4_or_more"]*round(area_summary$median, 0)*0
+         + c["has_garage:has_br2"]*0*1
+         + c["has_garage:has_br3"]*0*0
+         + c["has_garage:has_br4_or_more"]*0*0,
+         
+         yc_g0_b3 = c["(Intercept)"] + c["year_built"]*year_built
+         + c["heated_area"]*round(area_summary$median, 0) + c["has_garage"]*0 
+         + c["has_br2"]*0
+         + c["has_br3"]*1
+         + c["has_br4_or_more"]*0
+         + c["year_built:has_garage"]*year_built*0
+         + c["year_built:has_br2"]*year_built*0
+         + c["year_built:has_br3"]*year_built*1
+         + c["year_built:has_br4_or_more"]*year_built*0
+         + c["heated_area:has_garage"]*round(area_summary$median, 0)*0
+         + c["heated_area:has_br2"]*round(area_summary$median, 0)*0
+         + c["heated_area:has_br3"]*round(area_summary$median, 0)*1
+         + c["heated_area:has_br4_or_more"]*round(area_summary$median, 0)*0
+         + c["has_garage:has_br2"]*0*0
+         + c["has_garage:has_br3"]*0*1
+         + c["has_garage:has_br4_or_more"]*0*0,
+         
+         yc_g0_b4 = c["(Intercept)"] + c["year_built"]*year_built
+         + c["heated_area"]*round(area_summary$median, 0) + c["has_garage"]*0 
+         + c["has_br2"]*0
+         + c["has_br3"]*0
+         + c["has_br4_or_more"]*1
+         + c["year_built:has_garage"]*year_built*0
+         + c["year_built:has_br2"]*year_built*0
+         + c["year_built:has_br3"]*year_built*0
+         + c["year_built:has_br4_or_more"]*year_built*1
+         + c["heated_area:has_garage"]*round(area_summary$median, 0)*0
+         + c["heated_area:has_br2"]*round(area_summary$median, 0)*0
+         + c["heated_area:has_br3"]*round(area_summary$median, 0)*0
+         + c["heated_area:has_br4_or_more"]*round(area_summary$median, 0)*1
+         + c["has_garage:has_br2"]*0*0
+         + c["has_garage:has_br3"]*0*0
+         + c["has_garage:has_br4_or_more"]*0*1
+         )
+
+sales %>% ggplot(aes(x = year_built, y = price, color = has_br)) +
+  geom_point(size=0.5) +
+  geom_line(aes(y = yc_g0_b1), color = "red") +
+  geom_line(aes(y = yc_g0_b2), color = "green") +
+  geom_line(aes(y = yc_g0_b3), color = "blue") +
+  geom_line(aes(y = yc_g0_b4), color = "purple") +
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",",
+                                                       scientific = FALSE)) +
+  theme_minimal() +
+  ggtitle("Plot for Year Built")
+```
+
+## Interpretations of Predictors
+
+When the year built is held constant, the sales price on average increases as heated area increases. One-bedroom house expected sales prices increase the most rapidly as heated area increases. As mentioned [earlier](#no-bedroom-houses), these could be houses next to multi-bedroom houses that sold on the same deal. 
+
+For houses built in `r round(year_summary$mean, 0)` and in `r round(year_summary$max, 0)`, houses with garages have a greater increase in expected sale price as heated area increases than houses without an attached garage. However, houses with garages below a certain heated area are expected to sale for less than houses without a garage. Three-bedroom houses without garages are expected to sale for more money than two-bedroom houses without garages. Meanwhile, houses with 4 or more bedrooms are consistently expected to sale for more than both two- and three-bedroom houses as heated area increases.
+
+When year built increases, expected sales prices increases for three- and four or more bedroom houses. Sales price for two-bedroom houses increase at a lower rate, and one-bedroom houses decrease in sales price as the year built increases.
+
+The most surprising result of the model is that having an attached garage only helps the expected sales price if the house is above a particular square footage.
+
+## References
+- http://hcpao.org/
